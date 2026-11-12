@@ -1,0 +1,217 @@
+name: Build customized Zed (Windows)
+
+on:
+  schedule:
+    # zed-i18n usually lags Zed by a release; polling four times a day is plenty.
+    - cron: "23 2,8,14,20 * * *"
+  workflow_dispatch:
+    inputs:
+      i18n_tag:
+        description: "zed-i18n release tag (empty = latest)"
+        required: false
+        type: string
+      revision:
+        description: "Auto-update revision (empty = derive from tag)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-custom-zed
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve target release
+    runs-on: ubuntu-24.04
+    outputs:
+      should_build: ${{ steps.resolve.outputs.should_build }}
+      i18n_tag: ${{ steps.resolve.outputs.i18n_tag }}
+      zed_version: ${{ steps.resolve.outputs.zed_version }}
+      zed_commit: ${{ steps.resolve.outputs.zed_commit }}
+      revision: ${{ steps.resolve.outputs.revision }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve zed-i18n target
+        id: resolve
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_I18N_TAG: ${{ inputs.i18n_tag }}
+          INPUT_REVISION: ${{ inputs.revision }}
+        run: python3 overlay/resolve.py
+
+  build:
+    name: Build Windows bundle
+    needs: resolve
+    if: needs.resolve.outputs.should_build == 'true'
+    runs-on: windows-2022
+    timeout-minutes: 360
+    env:
+      ZED_VERSION: ${{ needs.resolve.outputs.zed_version }}
+      ZED_COMMIT: ${{ needs.resolve.outputs.zed_commit }}
+      I18N_TAG: ${{ needs.resolve.outputs.i18n_tag }}
+      REVISION: ${{ needs.resolve.outputs.revision }}
+      RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Clone zed-i18n
+        shell: bash
+        run: |
+          git clone --depth 1 --branch "$I18N_TAG" \
+            https://github.com/LI-NA/zed-i18n.git i18n
+
+      - name: Point zed-i18n at the target Zed release
+        shell: bash
+        run: |
+          cat > i18n/config/project.toml <<EOF
+          zed_version = "${ZED_VERSION}"
+          zed_commit = "${ZED_COMMIT}"
+          zed_repository = "https://github.com/zed-industries/zed"
+          cache_dir = ".cache/zed"
+          EOF
+
+      - name: Clone Zed source
+        shell: bash
+        run: |
+          mkdir -p i18n/.cache/zed
+          git clone --depth 1 --branch "$ZED_VERSION" \
+            https://github.com/zed-industries/zed.git \
+            "i18n/.cache/zed/$ZED_VERSION"
+          if [ -n "$ZED_COMMIT" ]; then
+            actual=$(git -C "i18n/.cache/zed/$ZED_VERSION" rev-parse HEAD)
+            if [ "$actual" != "$ZED_COMMIT" ]; then
+              echo "error: expected $ZED_COMMIT, got $actual" >&2
+              exit 1
+            fi
+          fi
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ runner.os }}-${{ needs.resolve.outputs.zed_version }}
+          restore-keys: |
+            cargo-registry-${{ runner.os }}-
+
+      - name: Install zed-i18n
+        working-directory: i18n
+        run: uv sync
+
+      - name: Apply Chinese localization
+        working-directory: i18n
+        run: uv run zed-i18n apply --language zh-CN
+
+      - name: Apply custom UI patches
+        shell: bash
+        run: python overlay/apply.py --zed-root "i18n/.cache/zed/$ZED_VERSION"
+
+      - name: Apply distribution patches
+        working-directory: i18n
+        shell: bash
+        run: |
+          uv run python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from tools.zed_i18n.distribution import (
+              apply_distribution_patches,
+              load_distribution_config,
+          )
+
+          zed_root = (Path(".cache/zed") / os.environ["ZED_VERSION"]).resolve()
+          config = load_distribution_config(Path("../overlay/distribution.toml").resolve())
+          apply_distribution_patches(zed_root, config)
+          print(f"distribution patches applied to {zed_root}")
+          PY
+
+      - name: Prepare Windows bundle scripts
+        working-directory: i18n
+        shell: bash
+        run: |
+          uv run python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from tools.zed_i18n.ci_release import (
+              patch_remote_server_build,
+              prepare_windows_bundle_script,
+          )
+
+          zed_root = (Path(".cache/zed") / os.environ["ZED_VERSION"]).resolve()
+          prepare_windows_bundle_script(zed_root)
+          # The remote server is not needed by the desktop build and takes a
+          # long time to compile.
+          patch_remote_server_build(zed_root, "windows")
+          print(f"Windows bundle prepared for {zed_root}")
+          PY
+
+      - name: Build Windows bundle
+        shell: pwsh
+        env:
+          ZED_I18N_UPDATE_MANIFEST_URL: https://github.com/${{ github.repository }}/releases/latest/download/manifest.json
+          ZED_I18N_LOCALE: zh-CN
+          ZED_I18N_REVISION: ${{ needs.resolve.outputs.revision }}
+          ZED_I18N_RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          $env:CI = $null
+          Push-Location "i18n/.cache/zed/$env:ZED_VERSION"
+          try {
+            pwsh -NoProfile -ExecutionPolicy Bypass -File script/bundle-windows.ps1 -Architecture x86_64
+          } finally {
+            Pop-Location
+          }
+
+      - name: Package release assets
+        shell: bash
+        env:
+          PYTHONPATH: i18n
+        run: |
+          uv run --project i18n python overlay/package.py \
+            --zed-root "i18n/.cache/zed/$ZED_VERSION" \
+            --dist-dir dist \
+            --zed-version "$ZED_VERSION" \
+            --i18n-tag "$I18N_TAG" \
+            --revision "$REVISION" \
+            --release-tag "$RELEASE_TAG" \
+            --repository "$GITHUB_REPOSITORY" \
+            --locale zh-CN
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            dist/Zed-i18n-zh-CN-windows-x86_64.exe \
+            dist/Zed-i18n-zh-CN-windows-x86_64.zip \
+            dist/manifest.json \
+            dist/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Zed $ZED_VERSION zh-CN (custom)" \
+            --notes-file dist/RELEASE_NOTES.md

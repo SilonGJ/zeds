@@ -1,0 +1,33 @@
+# Distribution metadata for the customized Windows build.
+#
+# The identity below is intentionally the same as zed-i18n's identity so that
+# installing this build upgrades an existing Zed i18n installation in place and
+# keeps its settings. Only the publisher URL is changed.
+
+product_name = "Zed i18n"
+product_slug = "zed-i18n"
+
+[identity]
+macos_bundle_id = "dev.zed-i18n.Zed"
+linux_app_id = "dev.zed-i18n.Zed"
+
+[windows]
+app_identifier = "ZedI18n-Editor-Stable"
+app_id = "{{48948123-2766-49EA-9C78-31B8096DE3D6}"
+app_user_id = "ZedI18n.Zed"
+appx_name = "ZedI18n.Zed"
+appx_full_name = "ZedI18n.Zed_1.0.0.0_neutral__japxn1gcva8rg"
+mutex = "ZedI18n-Editor-Stable-Instance-Mutex"
+registry_value = "ZedI18n"
+setup_name = "Zed-i18n"
+shell_name_short = "Z&ed i18n"
+
+[publisher]
+name = "SilonGJ"
+url = "https://github.com/SilonGJ/zeds"
+
+[update]
+enabled = true
+# Leave empty: the build embeds
+# https://github.com/<repository>/releases/latest/download/manifest.json
+manifest_url = ""
