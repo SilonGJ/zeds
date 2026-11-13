@@ -17,7 +17,7 @@ zed-i18n 通常比 Zed 官方晚一个版本发布，因此构建以 **zed-i18n 
 
 1. 每 6 小时检查一次 `LI-NA/zed-i18n` 的最新 release
 2. 读取该 tag 固定的 `zed_version` / `zed_commit`
-3. 生成发布标签 `custom-<i18n_tag>`，例如 `custom-v1.27.0-i18n.1`
+3. 生成发布标签 `zeds-<i18n_tag>`，例如 `zeds-v1.27.0-i18n.1`
 4. 若该 release 已存在则跳过，否则构建
 
 也可以在 Actions 页面手动运行 `Build customized Zed (Windows)`，并可指定：
@@ -25,7 +25,7 @@ zed-i18n 通常比 Zed 官方晚一个版本发布，因此构建以 **zed-i18n 
 - `i18n_tag`：要使用的 zed-i18n tag（留空表示最新）
 - `revision`：自动更新版本号（留空则从 tag 推导）
 
-手动重建时若 revision 与 tag 内数字不同，发布标签会追加 `-r<revision>`，例如 `custom-v1.27.0-i18n.1-r2`。
+手动重建时若 revision 与 tag 内数字不同，发布标签会追加 `-r<revision>`，例如 `zeds-v1.27.0-i18n.1-r2`。手动重建后，定时任务对同一 i18n tag 也会跳过，避免把旧 revision 重新发布成最新版。
 
 ## 产物
 

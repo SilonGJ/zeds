@@ -661,6 +661,54 @@ def install_theme(zed_root: Path) -> None:
     print(f"installed {destination}")
 
 
+THEME_LICENSE_HEADING = "## [VSCode Dark Modern](https://github.com/kevcamel/vscode_dark_modern.zed)"
+
+THEME_LICENSE_ENTRY = """********************************************************************************
+
+## [VSCode Dark Modern](https://github.com/kevcamel/vscode_dark_modern.zed)
+
+The MIT License (MIT)
+
+Copyright (c) 2024 Kevin Camellini
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+"""
+
+
+def append_theme_license(zed_root: Path) -> None:
+    """Attribute the bundled VSCode Dark Modern theme in the licenses list.
+
+    `script/generate-licenses.ps1` copies `assets/themes/LICENSES` verbatim into
+    `assets/licenses.md`, which feeds the in-app Open Source License
+    Attribution page, so the theme's MIT notice has to land in this file.
+    """
+    path = zed_root / "assets" / "themes" / "LICENSES"
+    text = path.read_text(encoding="utf-8")
+    if THEME_LICENSE_HEADING in text:
+        print(f"theme license already present in {path}")
+        return
+
+    separator = "\n" if text.endswith("\n") else "\n\n"
+    path.write_text(text + separator + THEME_LICENSE_ENTRY, encoding="utf-8")
+    print(f"appended theme license to {path}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--zed-root", required=True, type=Path)
@@ -671,6 +719,7 @@ def main() -> int:
         raise SystemExit(f"error: not a Zed checkout: {zed_root}")
 
     install_theme(zed_root)
+    append_theme_license(zed_root)
 
     style_path = zed_root / "crates" / "gpui" / "src" / "style.rs"
     replace_exact(style_path, STYLE_OLD, STYLE_NEW)
@@ -683,6 +732,7 @@ def main() -> int:
 
     touched = [
         zed_root / "assets" / "themes" / "vscode-dark-modern.json",
+        zed_root / "assets" / "themes" / "LICENSES",
         zed_root / "assets" / "settings" / "default.json",
         style_path,
         *(zed_root / relative for relative in SHADOW_PATCHES),

@@ -52,6 +52,30 @@ def release_exists(repository: str, tag: str, token: str | None) -> bool:
         raise
 
 
+def release_matches(repository: str, base_tag: str, token: str | None) -> bool:
+    """Whether `base_tag` or any rebuild tag of it (`-r2`, `-r3`, ...) exists.
+
+    A manual rebuild supersedes the default revision, so a later scheduled run
+    must not republish the older default tag as the newest release.
+    """
+    page = 1
+    while True:
+        releases = api_json(
+            f"https://api.github.com/repos/{repository}/releases"
+            f"?per_page=100&page={page}",
+            token,
+        )
+        if not releases:
+            return False
+        for release in releases:
+            tag = release.get("tag_name", "")
+            if tag == base_tag or tag.startswith(f"{base_tag}-r"):
+                return True
+        if len(releases) < 100:
+            return False
+        page += 1
+
+
 def read_project_config(tag: str) -> dict:
     encoded_tag = urllib.parse.quote(tag, safe="")
     url = (
@@ -116,11 +140,17 @@ def main() -> int:
     else:
         revision = default_revision
 
-    release_tag = f"custom-{i18n_tag}"
+    base_tag = f"zeds-{i18n_tag}"
+    release_tag = base_tag
     if revision != default_revision:
         release_tag += f"-r{revision}"
 
-    exists = release_exists(repository, release_tag, token)
+    if revision == default_revision:
+        # Scheduled runs use the default revision; skip them when a manual
+        # rebuild of the same i18n tag already exists.
+        exists = release_matches(repository, base_tag, token)
+    else:
+        exists = release_exists(repository, release_tag, token)
     should_build = not exists
 
     values = {
