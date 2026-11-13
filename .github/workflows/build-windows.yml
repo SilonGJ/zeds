@@ -171,6 +171,11 @@ jobs:
           print(f"Windows bundle prepared for {zed_root}")
           PY
 
+      - name: Type-check patched sources
+        shell: pwsh
+        working-directory: i18n/.cache/zed/${{ needs.resolve.outputs.zed_version }}
+        run: cargo check --package zed
+
       - name: Build Windows bundle
         shell: pwsh
         env:

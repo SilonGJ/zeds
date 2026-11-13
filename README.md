@@ -6,6 +6,7 @@
 - 全局直角界面（保留头像、开关等真正的圆形）
 - 内置 [VSCode Dark Modern](https://github.com/kevcamel/vscode_dark_modern.zed) 主题（`border.variant` 改为 `#2B2B2B`，不设为默认主题）
 - 移除菜单/弹出层阴影
+- 鼠标滚轮平滑滚动（可在设置中开关、调整时长）
 - 启用 Zed 内置自动更新，更新源指向本仓库
 
 本仓库不 fork、不修改、不向上游提交任何内容。所有补丁只在 GitHub Actions 的临时工作目录中应用，构建完成后即丢弃。
@@ -45,11 +46,26 @@ zed-i18n 通常比 Zed 官方晚一个版本发布，因此构建以 **zed-i18n 
 
 自动更新版本格式为 `<zed_version>+i18n.<revision>`，只有 revision 增加时才会提示更新。
 
+## 平滑滚动
+
+只对鼠标滚轮的离散滚动做跨帧插值，编辑器、终端、面板、列表通用；触控板的精确滚动和 Ctrl+滚轮缩放不受影响。
+
+默认开启、时长 120ms。可在「设置 → 窗口与布局 → 滚动」里开关和调整，也可以直接改 `settings.json`，保存后立即生效，无需重启：
+
+```json
+"smooth_scroll": {
+  "enabled": true,
+  "duration_ms": 120
+}
+```
+
+`reduce_motion` 为 `"on"` 时会自动停用平滑滚动。
+
 ## 仓库结构
 
 ```text
 .github/workflows/build-windows.yml   # Windows 构建与发布
-overlay/apply.py                      # 直角 UI、菜单阴影、主题补丁
+overlay/apply.py                      # 直角 UI、菜单阴影、主题、平滑滚动补丁
 overlay/resolve.py                    # 解析 zed-i18n 目标版本
 overlay/package.py                    # 收集产物并生成 manifest
 overlay/distribution.toml             # Windows 应用身份与自动更新配置
