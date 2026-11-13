@@ -478,19 +478,13 @@ enum InputModality {
     ),
     (
         "crates/settings_content/src/workspace.rs",
-        """    /// Whether the focused panel follows the mouse location
-    /// Default: false
-    pub focus_follows_mouse: Option<FocusFollowsMouse>,
-}
+        """    pub focus_follows_mouse: Option<FocusFollowsMouse>,
 """,
-        """    /// Whether the focused panel follows the mouse location
-    /// Default: false
-    pub focus_follows_mouse: Option<FocusFollowsMouse>,
-    /// Whether discrete mouse-wheel scrolling is interpolated across frames.
+        """    /// Whether discrete mouse-wheel scrolling is interpolated across frames.
     ///
     /// Default: enabled, 120ms
     pub smooth_scroll: Option<SmoothScrollSettings>,
-}
+    pub focus_follows_mouse: Option<FocusFollowsMouse>,
 """,
     ),
     (
