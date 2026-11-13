@@ -37,136 +37,68 @@ SHADOW_PATCHES = {
     "crates/ui/src/components/popover.rs": 2,
 }
 
-SMOOTH_SCROLL_STATE = '''#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
-enum InputModality {
-    Mouse,
-    Keyboard,
-    Touch,
-}
+EDITOR_SCROLL_STATE = '''pub type ScrollOffset = f64;
+pub type ScrollPixelOffset = f64;
 
-/// Interpolates discrete mouse-wheel scrolling over animation frames.
+/// Pending distance for interpolating discrete mouse-wheel scrolls.
 ///
-/// A wheel notch arrives as a single [`crate::ScrollDelta::Lines`] event, which
-/// would otherwise move the scroll position by several lines at once. The
-/// distance is accumulated here and released in small steps, one per frame, so
-/// every scroll surface (editor, terminal, panels, lists) moves smoothly
-/// without each of them needing its own animation.
+/// Only the editor opts into smoothing; every other scroll surface keeps the
+/// platform's native per-notch behaviour.
 #[derive(Default)]
-struct SmoothScrollState {
-    /// Remaining distance to scroll, in lines, per axis.
-    pending_x: f32,
-    pending_y: f32,
-    /// When the previous step was dispatched. The eased fraction is derived
-    /// from elapsed time rather than a frame counter, so a slow frame
-    /// compresses the animation instead of building up a backlog.
+pub(crate) struct SmoothScrollState {
+    /// Remaining distance to scroll, in rows/columns.
+    pending: gpui::Point<f32>,
+    /// When the previous step was applied. The eased fraction is derived from
+    /// elapsed time rather than a frame counter, so a slow frame compresses
+    /// the animation instead of building up a backlog.
     last_step: Option<Instant>,
-    /// The original wheel event, reused as the template for interpolated
-    /// events. Only its delta is replaced.
-    template: Option<crate::ScrollEvent>,
     /// Whether a next-frame callback is already queued.
     scheduled: bool,
-    /// Set while dispatching an interpolated event so it is not captured again.
-    dispatching: bool,
 }
 
-/// The maximum distance, in lines, that can accumulate while smoothing.
-///
-/// A free-spinning wheel can emit notches faster than the animation drains
-/// them; capping the backlog keeps the motion responsive instead of letting it
-/// trail far behind the wheel.
-const MAX_PENDING_SCROLL_LINES: f32 = 120.;
+/// The maximum distance, in rows, that can accumulate while smoothing.
+const MAX_PENDING_SMOOTH_SCROLL: f32 = 120.;
 
-/// Remaining distances below this, in lines, are flushed immediately.
+/// Remaining distances below this, in rows, are flushed immediately.
 const SMOOTH_SCROLL_EPSILON: f32 = 0.01;
+
 '''
 
-SMOOTH_SCROLL_METHODS = '''    /// Schedule the given closure to be run directly after the current frame is rendered.
-    pub fn on_next_frame(&self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
-        RefCell::borrow_mut(&self.next_frame_callbacks).push(Box::new(callback));
-        self.platform_window.schedule_frame();
-        // Next-frame callbacks create frame demand without dirtying the
-        // window, so the platform's frame source must be woken explicitly.
-        self.invalidator.wake_platform();
-    }
-
-    /// Captures a discrete mouse-wheel scroll so it can be interpolated.
+EDITOR_SCROLL_METHODS = '''    /// Adds a discrete wheel scroll to the pending smooth-scroll distance.
     ///
-    /// Returns `true` when the event was captured, in which case the caller
-    /// must not dispatch it. Precise (pixel) deltas from trackpads and
-    /// touchscreens, modifier-assisted zooming, and events that are already
-    /// interpolated pass through untouched.
-    fn try_smooth_scroll(&mut self, event: crate::ScrollEvent, cx: &mut App) -> bool {
-        if self.smooth_scroll.dispatching {
-            return false;
-        }
-
-        let Some(duration) = cx.smooth_scroll() else {
-            self.smooth_scroll.pending_x = 0.;
-            self.smooth_scroll.pending_y = 0.;
-            return false;
-        };
-
-        let crate::ScrollDelta::Lines(delta) = event.delta else {
-            return false;
-        };
-        if !self.active.get()
-            || event.modifiers.secondary(cx)
-            || event.touch_phase != crate::TouchPhase::Moved
-        {
-            return false;
-        }
-
-        // Windows delivers precision-touchpad scrolling as line deltas too, but
-        // in much finer steps than a wheel notch. Only interpolate whole lines
-        // so trackpads keep their native, already-smooth behaviour.
-        let dominant = if delta.x.abs() >= delta.y.abs() {
-            delta.x
-        } else {
-            delta.y
-        };
-        if dominant.abs() < 1. || duration.is_zero() {
-            return false;
-        }
-
+    /// Returns `true` when a next-frame callback needs to be scheduled.
+    pub(crate) fn push_smooth_scroll(&mut self, delta: gpui::Point<f32>) -> bool {
+        let smooth = &mut self.smooth_scroll;
         // Reversing direction should respond immediately instead of first
-        // cancelling out the distance that is still pending from the previous
-        // notch.
-        if self.smooth_scroll.pending_x * delta.x < 0. {
-            self.smooth_scroll.pending_x = 0.;
+        // cancelling out the distance still pending from the previous notch.
+        if smooth.pending.x * delta.x < 0. {
+            smooth.pending.x = 0.;
         }
-        if self.smooth_scroll.pending_y * delta.y < 0. {
-            self.smooth_scroll.pending_y = 0.;
+        if smooth.pending.y * delta.y < 0. {
+            smooth.pending.y = 0.;
         }
-
-        self.smooth_scroll.pending_x = (self.smooth_scroll.pending_x + delta.x)
-            .clamp(-MAX_PENDING_SCROLL_LINES, MAX_PENDING_SCROLL_LINES);
-        self.smooth_scroll.pending_y = (self.smooth_scroll.pending_y + delta.y)
-            .clamp(-MAX_PENDING_SCROLL_LINES, MAX_PENDING_SCROLL_LINES);
-        self.smooth_scroll.template = Some(event);
-        if self.smooth_scroll.last_step.is_none() {
-            self.smooth_scroll.last_step = Some(Instant::now());
+        smooth.pending.x = (smooth.pending.x + delta.x)
+            .clamp(-MAX_PENDING_SMOOTH_SCROLL, MAX_PENDING_SMOOTH_SCROLL);
+        smooth.pending.y = (smooth.pending.y + delta.y)
+            .clamp(-MAX_PENDING_SMOOTH_SCROLL, MAX_PENDING_SMOOTH_SCROLL);
+        if smooth.last_step.is_none() {
+            smooth.last_step = Some(Instant::now());
         }
-        self.schedule_smooth_scroll();
-        true
+        if smooth.scheduled {
+            false
+        } else {
+            smooth.scheduled = true;
+            true
+        }
     }
 
-    fn schedule_smooth_scroll(&mut self) {
-        if self.smooth_scroll.scheduled {
-            return;
-        }
-        self.smooth_scroll.scheduled = true;
-        self.on_next_frame(|window, cx| window.advance_smooth_scroll(cx));
-    }
-
-    /// Releases one eased step of the pending scroll distance, then re-arms the
-    /// next frame while distance remains.
-    fn advance_smooth_scroll(&mut self, cx: &mut App) {
+    /// Releases one eased step of the pending distance, then re-arms the next
+    /// frame while distance remains.
+    pub(crate) fn advance_smooth_scroll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.smooth_scroll.scheduled = false;
 
         let Some(duration) = cx.smooth_scroll() else {
-            self.smooth_scroll.pending_x = 0.;
-            self.smooth_scroll.pending_y = 0.;
-            self.smooth_scroll.last_step = None;
+            self.smooth_scroll = SmoothScrollState::default();
             return;
         };
 
@@ -185,39 +117,86 @@ SMOOTH_SCROLL_METHODS = '''    /// Schedule the given closure to be run directly
             1. - (1. - t).powi(3)
         };
 
-        let step_x = self.smooth_scroll.pending_x * progress;
-        let step_y = self.smooth_scroll.pending_y * progress;
-        self.smooth_scroll.pending_x -= step_x;
-        self.smooth_scroll.pending_y -= step_y;
-
-        let done = self.smooth_scroll.pending_x.abs() < SMOOTH_SCROLL_EPSILON
-            && self.smooth_scroll.pending_y.abs() < SMOOTH_SCROLL_EPSILON;
+        let step = point(
+            self.smooth_scroll.pending.x * progress,
+            self.smooth_scroll.pending.y * progress,
+        );
+        self.smooth_scroll.pending.x -= step.x;
+        self.smooth_scroll.pending.y -= step.y;
+        let done = self.smooth_scroll.pending.x.abs() < SMOOTH_SCROLL_EPSILON
+            && self.smooth_scroll.pending.y.abs() < SMOOTH_SCROLL_EPSILON;
         if done {
-            self.smooth_scroll.pending_x = 0.;
-            self.smooth_scroll.pending_y = 0.;
+            self.smooth_scroll.pending = point(0., 0.);
+        }
+
+        if step.x != 0. || step.y != 0. {
+            let current = self.scroll_position(cx);
+            let target = point(
+                current.x + f64::from(step.x),
+                current.y + f64::from(step.y),
+            );
+            self.scroll(target, window, cx);
+        }
+
+        if done {
             self.smooth_scroll.last_step = None;
+        } else {
+            self.smooth_scroll.scheduled = true;
+            let editor = cx.entity();
+            window.on_next_frame(move |window, cx| {
+                editor.update(cx, |editor, cx| editor.advance_smooth_scroll(window, cx));
+            });
         }
+    }
+'''
 
-        if step_x != 0. || step_y != 0. {
-            if let Some(template) = self.smooth_scroll.template.clone() {
-                self.smooth_scroll.dispatching = true;
-                self.dispatch_event(
-                    crate::PlatformInput::Scroll(crate::ScrollEvent {
-                        delta: crate::ScrollDelta::Lines(Point {
-                            x: step_x,
-                            y: step_y,
-                        }),
-                        ..template
-                    }),
-                    cx,
-                );
-                self.smooth_scroll.dispatching = false;
-            }
-        }
+EDITOR_SCROLL_LISTENER = '''                    delta = delta.coalesce(event.delta);
 
-        if !done {
-            self.schedule_smooth_scroll();
+                    // Interpolate discrete wheel notches. Only the editor
+                    // reaches this listener, so the terminal, panels, and
+                    // lists keep the platform's native scroll behaviour.
+                    if let ScrollDelta::Lines(lines) = event.delta
+                        && !event.modifiers.secondary(cx)
+                        && lines.x.abs().max(lines.y.abs()) >= 1.
+                        && cx.smooth_scroll().is_some_and(|duration| !duration.is_zero())
+                    {
+                        let scroll_sensitivity = if event.modifiers.alt {
+                            fast_scroll_sensitivity
+                        } else {
+                            base_scroll_sensitivity
+                        };
+                        let step =
+                            point(lines.x * scroll_sensitivity, lines.y * scroll_sensitivity);
+                        let schedule = editor.update(cx, |editor, _| {
+                            editor.push_smooth_scroll(step)
+                        });
+                        delta = ScrollDelta::default();
+                        if schedule {
+                            let editor = editor.clone();
+                            window.on_next_frame(move |window, cx| {
+                                editor.update(cx, |editor, cx| {
+                                    editor.advance_smooth_scroll(window, cx)
+                                });
+                            });
+                        }
+                        cx.stop_propagation();
+                        return;
+                    }
+'''
+
+APPLY_SCROLL_DELTA = '''    pub fn apply_scroll_delta(
+        &mut self,
+        scroll_delta: gpui::Point<f32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut delta = scroll_delta;
+        if self.scroll_manager.forbid_vertical_scroll {
+            delta.y = 0.0;
         }
+        let display_map = self.display_map.update(cx, |map, cx| map.snapshot(cx));
+        let position = self.scroll_manager.scroll_position(&display_map, cx) + delta.map(f64::from);
+        self.set_scroll_position_taking_display_map(position, true, false, display_map, window, cx);
     }
 '''
 
@@ -273,7 +252,7 @@ SMOOTH_SCROLL_SECTION = '''    fn scrolling_section() -> [SettingsPageItem; 3] {
             SettingsPageItem::SectionHeader("滚动"),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "平滑滚动",
-                description: "把鼠标滚轮的离散滚动分摊到多帧，减少跳格感。触控板与 Ctrl+滚轮缩放不受影响。",
+                description: "把编辑器的滚轮离散滚动分摊到多帧，减少跳格感。仅对编辑器生效，触控板与 Ctrl+滚轮缩放不受影响。",
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("smooth_scroll.enabled"),
@@ -328,77 +307,6 @@ SMOOTH_SCROLL_SECTION = '''    fn scrolling_section() -> [SettingsPageItem; 3] {
 '''
 
 SMOOTH_SCROLL_PATCHES = [
-    (
-        "crates/gpui/src/window.rs",
-        """#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
-enum InputModality {
-    Mouse,
-    Keyboard,
-    Touch,
-}
-""",
-        SMOOTH_SCROLL_STATE,
-    ),
-    (
-        "crates/gpui/src/window.rs",
-        """    last_input_modality: InputModality,
-    touch_gestures: TouchGestureRecognizer,
-""",
-        """    last_input_modality: InputModality,
-    smooth_scroll: SmoothScrollState,
-    touch_gestures: TouchGestureRecognizer,
-""",
-    ),
-    (
-        "crates/gpui/src/window.rs",
-        """            last_input_modality: InputModality::Mouse,
-            touch_gestures: TouchGestureRecognizer::new(
-""",
-        """            last_input_modality: InputModality::Mouse,
-            smooth_scroll: SmoothScrollState::default(),
-            touch_gestures: TouchGestureRecognizer::new(
-""",
-    ),
-    (
-        "crates/gpui/src/window.rs",
-        """    /// Dispatch a mouse, keyboard, or touch event on the window.
-    #[profiling::function]
-    pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
-        #[cfg(feature = "profiler")]
-        self.window_profiler.begin_input(event.kind_name());
-""",
-        """    /// Dispatch a mouse, keyboard, or touch event on the window.
-    #[profiling::function]
-    pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
-        // Capture discrete mouse-wheel scrolls and release them over the next
-        // few frames. Every scroll surface receives its events through here,
-        // so this covers the editor, terminal, panels, and lists in one place.
-        if let crate::PlatformInput::Scroll(scroll) = &event
-            && self.try_smooth_scroll(scroll.clone(), cx)
-        {
-            return DispatchEventResult {
-                propagate: false,
-                default_prevented: false,
-            };
-        }
-
-        #[cfg(feature = "profiler")]
-        self.window_profiler.begin_input(event.kind_name());
-""",
-    ),
-    (
-        "crates/gpui/src/window.rs",
-        """    /// Schedule the given closure to be run directly after the current frame is rendered.
-    pub fn on_next_frame(&self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
-        RefCell::borrow_mut(&self.next_frame_callbacks).push(Box::new(callback));
-        self.platform_window.schedule_frame();
-        // Next-frame callbacks create frame demand without dirtying the
-        // window, so the platform's frame source must be woken explicitly.
-        self.invalidator.wake_platform();
-    }
-""",
-        SMOOTH_SCROLL_METHODS,
-    ),
     (
         "crates/gpui/src/app.rs",
         """    pub(crate) reduce_motion: bool,
@@ -482,6 +390,8 @@ enum InputModality {
 """,
         """    /// Whether discrete mouse-wheel scrolling is interpolated across frames.
     ///
+    /// Only the editor is affected.
+    ///
     /// Default: enabled, 120ms
     pub smooth_scroll: Option<SmoothScrollSettings>,
     pub focus_follows_mouse: Option<FocusFollowsMouse>,
@@ -508,6 +418,7 @@ pub struct FocusFollowsMouse {
 #[derive(Copy, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug)]
 pub struct SmoothScrollSettings {
     /// Whether wheel scrolling is interpolated across animation frames.
+    /// Only the editor is affected.
     pub enabled: Option<bool>,
     /// How long, in milliseconds, an interpolated scroll takes to finish.
     pub duration_ms: Option<u64>,
@@ -554,12 +465,57 @@ pub struct SmoothScrollSettings {
     "debounce_ms": 250,
   },
   // Whether discrete mouse-wheel scrolling is interpolated across frames.
-  // Touchpads and Ctrl+wheel zooming are unaffected.
+  // Only the editor is affected; touchpads and Ctrl+wheel zooming are untouched.
   "smooth_scroll": {
     "enabled": true,
     "duration_ms": 120,
   },
 """,
+    ),
+    (
+        "crates/editor/src/editor.rs",
+        """    pub scroll_manager: ScrollManager,
+""",
+        """    pub scroll_manager: ScrollManager,
+    /// Pending distance for interpolating discrete mouse-wheel scrolls.
+    pub(crate) smooth_scroll: crate::scroll::SmoothScrollState,
+""",
+    ),
+    (
+        "crates/editor/src/editor.rs",
+        """            scroll_manager: ScrollManager::new(cx),
+""",
+        """            scroll_manager: ScrollManager::new(cx),
+            smooth_scroll: crate::scroll::SmoothScrollState::default(),
+""",
+    ),
+    (
+        "crates/editor/src/scroll.rs",
+        """use std::{cmp::Ordering, time::Duration};
+""",
+        """use std::{
+    cmp::Ordering,
+    time::{Duration, Instant},
+};
+""",
+    ),
+    (
+        "crates/editor/src/scroll.rs",
+        """pub type ScrollOffset = f64;
+pub type ScrollPixelOffset = f64;
+""",
+        EDITOR_SCROLL_STATE,
+    ),
+    (
+        "crates/editor/src/scroll.rs",
+        APPLY_SCROLL_DELTA,
+        APPLY_SCROLL_DELTA + "\n" + EDITOR_SCROLL_METHODS,
+    ),
+    (
+        "crates/editor/src/element/mouse.rs",
+        """                    delta = delta.coalesce(event.delta);
+""",
+        EDITOR_SCROLL_LISTENER,
     ),
 ]
 
